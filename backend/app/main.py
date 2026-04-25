@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from openai import AuthenticationError
 from pydantic import BaseModel
 import uvicorn
 
@@ -87,7 +86,7 @@ async def start_mission(request: MissionRequest):
         raise HTTPException(status_code=400, detail="Task is required.")
 
     thread_id = "demo-1"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 10}
     initial_state = {
         "task": task,
         "messages": [],
@@ -102,25 +101,42 @@ async def start_mission(request: MissionRequest):
         "content": f"Mission started: {task}",
     })
 
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def run_graph():
+        try:
+            for output in graph.stream(initial_state, config, stream_mode="values"):
+                loop.call_soon_threadsafe(queue.put_nowait, ("output", output))
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+
     try:
-        for output in graph.stream(initial_state, config, stream_mode="values"):
+        import threading
+        threading.Thread(target=run_graph, daemon=True).start()
+
+        while True:
+            kind, payload = await queue.get()
+
+            if kind == "done":
+                break
+            if kind == "error":
+                raise payload
+
+            output = payload
             messages = output.get("messages", [])
             if messages:
                 last_msg = messages[-1]
                 content = getattr(last_msg, "content", str(last_msg))
                 status = output.get("status", "unknown")
                 agent = status.split("_")[0] if status != "unknown" else "unknown"
-
-                await broadcast(
-                    {
-                        "type": "agent_message",
-                        "agent": agent,
-                        "content": content,
-                        "next": output.get("next", "unknown"),
-                    }
-                )
-
-            await asyncio.sleep(0.3)
+                await broadcast({
+                    "type": "agent_message",
+                    "agent": agent,
+                    "content": content,
+                    "next": output.get("next", "unknown"),
+                })
 
         await broadcast({
             "type": "mission_complete",
@@ -128,18 +144,6 @@ async def start_mission(request: MissionRequest):
             "content": "Mission complete.",
         })
         return {"status": "completed", "thread_id": thread_id}
-    except AuthenticationError:
-        key_present = bool(os.getenv("OPENAI_API_KEY", "").strip())
-        detail = (
-            "OPENAI_API_KEY is loaded but was rejected by OpenAI. Use a valid key and verify project/billing access."
-            if key_present
-            else "OPENAI_API_KEY is missing. Add it to backend/.env or .env at repo root and restart the backend."
-        )
-        await broadcast({"type": "error", "message": detail, "content": detail})
-        raise HTTPException(
-            status_code=401,
-            detail=detail,
-        )
     except Exception as exc:
         message = f"Mission execution failed: {exc}"
         await broadcast({"type": "error", "message": message, "content": message})
@@ -150,12 +154,14 @@ async def start_mission(request: MissionRequest):
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_connections.append(websocket)
+    print(f"[WS] Client connected. Total: {len(active_connections)}")
     while True:
         try:
             await websocket.receive_text()
         except WebSocketDisconnect:
             if websocket in active_connections:
                 active_connections.remove(websocket)
+            print(f"[WS] Client disconnected. Total: {len(active_connections)}")
             break
 
 

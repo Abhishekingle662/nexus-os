@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(curl -s http://localhost:11434/api/ps)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /PID 75948 /F)",
+      "PowerShell(Stop-Process -Id 75948 -Force)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; Write-Host \"Killed all port 8000 processes\")"
+    ]
+  }
+}
