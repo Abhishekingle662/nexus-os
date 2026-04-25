@@ -1,14 +1,15 @@
+# backend/app/core/graph.py
+from typing import TypedDict, Annotated, Dict
+import operator
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from typing import TypedDict, Annotated
-import operator
 
 class AgentState(TypedDict):
+    task: str
     messages: Annotated[list, operator.add]
     next: str
-    task: str
-    code: str | None
     status: str
+    code: str | None
 
 def create_nexus_graph(
     supervisor_node,
@@ -16,37 +17,36 @@ def create_nexus_graph(
     researcher_node,
     coder_node,
     tester_node,
-    available_tools=None,
+    available_tools,   # not used directly here but kept for your signature
 ):
     workflow = StateGraph(AgentState)
 
-    # Keep tool injection available for future tool-aware routing/validation.
-    _ = available_tools
-    
+    # Add all nodes
     workflow.add_node("supervisor", supervisor_node)
     workflow.add_node("planner", planner_node)
     workflow.add_node("researcher", researcher_node)
     workflow.add_node("coder", coder_node)
     workflow.add_node("tester", tester_node)
-    
+
+    # Entry point
     workflow.set_entry_point("supervisor")
-    
-    # Routing logic
+
+    # Supervisor decides where to go next
     workflow.add_conditional_edges(
         "supervisor",
-        lambda x: x["next"],
+        lambda state: state["next"],
         {
             "planner": "planner",
             "researcher": "researcher",
             "coder": "coder",
             "tester": "tester",
-            "END": END
-        }
+            "END": END,
+        },
     )
-    
-    # Simple cycle back to supervisor
+
+    # Every other agent routes back to supervisor
     for node in ["planner", "researcher", "coder", "tester"]:
         workflow.add_edge(node, "supervisor")
-    
+
     memory = MemorySaver()
     return workflow.compile(checkpointer=memory)

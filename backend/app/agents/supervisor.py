@@ -1,49 +1,48 @@
 # backend/app/agents/supervisor.py
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from typing import Dict
+from langchain_core.messages import AIMessage
+from pydantic import BaseModel, Field
+from typing import Literal, Dict
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
+class SupervisorDecision(BaseModel):
+    reasoning: str = Field(description="Brief reasoning for your decision")
+    next: Literal["planner", "researcher", "coder", "tester", "END"] = Field(
+        description="Next agent or END when the mission is fully complete"
+    )
+
 supervisor_prompt = ChatPromptTemplate.from_messages([
     ("system", """You are the NexusOS Supervisor Agent.
-You coordinate a team of specialist agents to complete the user's mission.
-
-Available agents:
-- planner: Breaks down the task into steps
-- researcher: Gathers information and best practices
-- coder: Writes the actual code
-- tester: Tests and debugs the code
 
 Current mission: {task}
 
-Decide the next agent to call or reply with 'END' when the mission is complete.
-Always respond with clear reasoning then the agent name or END."""),
-    ("placeholder", "{messages}")
+You coordinate planner, researcher, coder, and tester.
+
+RULES FOR ENDING:
+- If the coder has already provided a complete, working script for this mission → call END
+- If all necessary work is done and you see the final code in the conversation → call END
+- Only continue calling agents if something is still missing (plan, research, code, tests)
+
+Be decisive. This is a simple mission — do not loop forever."""),
+    ("placeholder", "{messages}"),
 ])
+
+structured_llm = llm.with_structured_output(SupervisorDecision)
 
 def supervisor_node(state: Dict):
     prompt = supervisor_prompt.invoke({
-        "task": state.get("task", "No task provided"),
+        "task": state.get("task", ""),
         "messages": state.get("messages", [])
     })
     
-    response = llm.invoke(prompt)
-    
-    content = response.content.lower()
-    if any(word in content for word in ["end", "complete", "finished", "done"]):
-        next_agent = "END"
-    elif "research" in content or "search" in content:
-        next_agent = "researcher"
-    elif "plan" in content or "step" in content:
-        next_agent = "planner"
-    elif "test" in content or "debug" in content or "check" in content:
-        next_agent = "tester"
-    else:
-        next_agent = "coder"
+    decision: SupervisorDecision = structured_llm.invoke(prompt)
     
     return {
-        "messages": state.get("messages", []) + [response],
-        "next": next_agent,
+        "messages": state.get("messages", []) + [
+            AIMessage(content=f"{decision.reasoning}\n→ Next: {decision.next}")
+        ],
+        "next": decision.next,
         "status": "supervisor_decision"
     }
