@@ -10,15 +10,18 @@ class AgentState(TypedDict):
     code: str | None
     status: str
 
-# Import your agent nodes here (we'll create them next)
-from app.agents.supervisor import supervisor_node
-from app.agents.planner import planner_node
-from app.agents.researcher import researcher_node
-from app.agents.coder import coder_node
-from app.agents.tester import tester_node
-
-def create_nexus_graph():
+def create_nexus_graph(
+    supervisor_node,
+    planner_node,
+    researcher_node,
+    coder_node,
+    tester_node,
+    available_tools=None,
+):
     workflow = StateGraph(AgentState)
+
+    # Keep tool injection available for future tool-aware routing/validation.
+    _ = available_tools
     
     workflow.add_node("supervisor", supervisor_node)
     workflow.add_node("planner", planner_node)

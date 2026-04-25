@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: dockerfile
+    container_name: nexus-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: ./.env
+        required: false
+    volumes:
+      - ./backend:/app
+      - ./generated:/app/generated
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: dockerfile
+    container_name: nexus-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    container_name: nexus-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
