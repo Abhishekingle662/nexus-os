@@ -1,6 +1,10 @@
 from langchain_core.tools import tool
 import subprocess
+from pathlib import Path
 from typing import Optional
+
+GENERATED_DIR = Path(__file__).resolve().parent.parent / "generated"
+GENERATED_DIR.mkdir(exist_ok=True)
 
 try:
     from langchain_community.tools import DuckDuckGoSearchRun
@@ -45,9 +49,9 @@ def execute_code(code: str) -> str:
 def save_code_to_file(filename: str, code: str) -> str:
     """Save generated code to a file for the project."""
     try:
-        with open(f"./generated/{filename}", "w") as f:
-            f.write(code)
-        return f"Code saved to ./generated/{filename}"
+        path = GENERATED_DIR / filename
+        path.write_text(code, encoding="utf-8")
+        return f"Code saved to {path}\n\n{code}"
     except Exception as e:
         return f"Failed to save: {str(e)}"
 
@@ -55,8 +59,7 @@ def save_code_to_file(filename: str, code: str) -> str:
 def read_file(filename: str) -> str:
     """Read a file from the generated project."""
     try:
-        with open(f"./generated/{filename}", "r") as f:
-            return f.read()
+        return (GENERATED_DIR / filename).read_text(encoding="utf-8")
     except Exception as e:
         return f"Error reading file: {str(e)}"
 

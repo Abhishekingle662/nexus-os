@@ -41,6 +41,19 @@ else:
 
 app = FastAPI(title="NexusOS MVP")
 
+GENERATED_DIR = APP_DIR.parent / "generated"
+GENERATED_DIR.mkdir(exist_ok=True)
+
+def auto_save_code(code: str, filename: str = "example_script.py"):
+    try:
+        GENERATED_DIR.mkdir(exist_ok=True)
+        filepath = GENERATED_DIR / filename
+        filepath.write_text(code, encoding="utf-8")
+        print(f"Auto-saved code to: {filepath}")
+        return str(filepath)
+    except Exception as e:
+        print(f"Auto-save failed: {e}")
+        return None
 
 class MissionRequest(BaseModel):
     task: str
@@ -85,7 +98,8 @@ async def start_mission(request: MissionRequest):
     if not task:
         raise HTTPException(status_code=400, detail="Task is required.")
 
-    thread_id = "demo-1"
+    import uuid
+    thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 10}
     initial_state = {
         "task": task,
@@ -138,6 +152,16 @@ async def start_mission(request: MissionRequest):
                     "next": output.get("next", "unknown"),
                 })
 
+        final_code = None
+        for msg in reversed(output.get("messages", [])):
+            content = getattr(msg, "content", "")
+            if "def " in content or "import " in content:
+                final_code = content
+                break
+
+        if final_code:
+            auto_save_code(final_code, "streaming_example.py")
+
         await broadcast({
             "type": "mission_complete",
             "status": "done",
@@ -148,6 +172,18 @@ async def start_mission(request: MissionRequest):
         message = f"Mission execution failed: {exc}"
         await broadcast({"type": "error", "message": message, "content": message})
         raise HTTPException(status_code=500, detail=message)
+
+@app.get("/files")
+async def list_files():
+    files = [f.name for f in GENERATED_DIR.iterdir() if f.is_file()]
+    return {"files": sorted(files)}
+
+@app.get("/files/{filename}")
+async def get_file(filename: str):
+    path = GENERATED_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"filename": filename, "content": path.read_text(encoding="utf-8")}
 
 # WebSocket for real-time dashboard
 @app.websocket("/ws")

@@ -2,7 +2,10 @@ fastapi
 uvicorn[standard]
 langgraph
 langchain
+langchain-community
 langchain-ollama
+langchain-openai
 python-dotenv
 redis
 httpx
+ddgs
