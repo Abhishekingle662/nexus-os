@@ -1,32 +1,55 @@
 ```python
-import openai
-import os
+# main.py
+from fastapi import FastAPI
 
-# Set up your OpenAI API key
-openai.api_key = os.getenv("OPENAI_API_KEY")
+app = FastAPI()
 
-# Function to stream responses from the OpenAI API
-def stream_chat_completion(messages):
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=messages,
-        stream=True
-    )
-    
-    for chunk in response:
-        if 'choices' in chunk:
-            for choice in chunk['choices']:
-                if 'delta' in choice and 'content' in choice['delta']:
-                    print(choice['delta']['content'], end='', flush=True)
+@app.get("/hello")
+async def read_hello():
+    return {"message": "Hello from NexusOS!"}
 
-# Example usage
-if __name__ == "__main__":
-    messages = [
-        {"role": "user", "content": "Hello, how are you?"}
-    ]
-    
-    print("Streaming response:")
-    stream_chat_completion(messages)
+@app.get("/health")
+async def read_health():
+    return {"status": "healthy"}
 ```
 
-Make sure to set your OpenAI API key in your environment variables as `OPENAI_API_KEY` before running the script. This script will stream the response from the OpenAI API based on the provided messages.
+### requirements.txt
+```plaintext
+fastapi==0.95.0
+uvicorn==0.22.0
+```
+
+### Dockerfile
+```dockerfile
+# Use the official Python image from the Docker Hub
+FROM python:3.9
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the requirements file into the container
+COPY requirements.txt .
+
+# Install the dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application code into the container
+COPY . .
+
+# Command to run the application
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### Instructions to Run
+1. Save the `main.py`, `requirements.txt`, and `Dockerfile` in the same directory.
+2. Build the Docker image:
+   ```bash
+   docker build -t fastapi-nexusos .
+   ```
+3. Run the Docker container:
+   ```bash
+   docker run -d -p 8000:8000 fastapi-nexusos
+   ```
+4. Access the endpoints:
+   - `/hello`: `http://localhost:8000/hello`
+   - `/health`: `http://localhost:8000/health`

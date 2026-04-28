@@ -44,13 +44,13 @@ app = FastAPI(title="NexusOS MVP")
 GENERATED_DIR = APP_DIR.parent / "generated"
 GENERATED_DIR.mkdir(exist_ok=True)
 
-def auto_save_code(code: str, filename: str = "example_script.py"):
+def auto_save_code(code: str, filename: str = "streaming_example.py"):
     try:
         GENERATED_DIR.mkdir(exist_ok=True)
         filepath = GENERATED_DIR / filename
         filepath.write_text(code, encoding="utf-8")
-        print(f"Auto-saved code to: {filepath}")
-        return str(filepath)
+        print(f"Auto-saved: {filepath}")
+        return filepath
     except Exception as e:
         print(f"Auto-save failed: {e}")
         return None
@@ -98,7 +98,7 @@ async def start_mission(request: MissionRequest):
     if not task:
         raise HTTPException(status_code=400, detail="Task is required.")
 
-    import uuid
+    import uuid, threading
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 10}
     initial_state = {
@@ -115,9 +115,13 @@ async def start_mission(request: MissionRequest):
         "content": f"Mission started: {task}",
     })
 
-    loop = asyncio.get_event_loop()
+    loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
+    # graph.stream() is a blocking synchronous generator — running it on the
+    # event loop would freeze all WebSocket sends until the graph finishes.
+    # A background thread feeds each step into an asyncio Queue so the event
+    # loop stays free to broadcast each message as it arrives.
     def run_graph():
         try:
             for output in graph.stream(initial_state, config, stream_mode="values"):
@@ -126,13 +130,13 @@ async def start_mission(request: MissionRequest):
         except Exception as exc:
             loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
 
-    try:
-        import threading
-        threading.Thread(target=run_graph, daemon=True).start()
+    threading.Thread(target=run_graph, daemon=True).start()
 
+    final_code = None
+
+    try:
         while True:
             kind, payload = await queue.get()
-
             if kind == "done":
                 break
             if kind == "error":
@@ -145,6 +149,7 @@ async def start_mission(request: MissionRequest):
                 content = getattr(last_msg, "content", str(last_msg))
                 status = output.get("status", "unknown")
                 agent = status.split("_")[0] if status != "unknown" else "unknown"
+
                 await broadcast({
                     "type": "agent_message",
                     "agent": agent,
@@ -152,15 +157,18 @@ async def start_mission(request: MissionRequest):
                     "next": output.get("next", "unknown"),
                 })
 
-        final_code = None
-        for msg in reversed(output.get("messages", [])):
-            content = getattr(msg, "content", "")
-            if "def " in content or "import " in content:
-                final_code = content
-                break
+                if "coder" in status.lower() and ("```python" in content or "import " in content):
+                    final_code = content
 
         if final_code:
-            auto_save_code(final_code, "streaming_example.py")
+            filepath = auto_save_code(final_code)
+            if filepath:
+                await broadcast({
+                    "type": "agent_message",
+                    "agent": "system",
+                    "content": f"File saved: {filepath}",
+                    "next": "END",
+                })
 
         await broadcast({
             "type": "mission_complete",
@@ -168,7 +176,10 @@ async def start_mission(request: MissionRequest):
             "content": "Mission complete.",
         })
         return {"status": "completed", "thread_id": thread_id}
+
     except Exception as exc:
+        import traceback
+        traceback.print_exc()          # full traceback in uvicorn terminal
         message = f"Mission execution failed: {exc}"
         await broadcast({"type": "error", "message": message, "content": message})
         raise HTTPException(status_code=500, detail=message)

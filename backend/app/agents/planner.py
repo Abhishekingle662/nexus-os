@@ -3,7 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage
 from typing import Dict
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+llm = ChatOpenAI(model="o3-mini", temperature=1)
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", """You are the Planner Agent.

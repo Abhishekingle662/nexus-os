@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 from typing import Literal, Dict
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+llm = ChatOpenAI(model="o3-mini", temperature=1)
 
 class SupervisorDecision(BaseModel):
     reasoning: str = Field(description="Brief reasoning for your decision")
@@ -17,9 +17,11 @@ supervisor_prompt = ChatPromptTemplate.from_messages([
 Current mission: {task}
 
 ROUTING RULES:
-- If the mission asks to "create", "build", "write", "example script", or "code" → always route to researcher first, then to coder.
-- Only call END when the coder has saved the actual file using tools and the task is complete.
-- Do not end early if code was only described in text."""),
+- Research/info tasks ("news", "latest", "recent", "what is", "summarize", "find", "explain") → researcher. END only after researcher has responded.
+- Coding tasks ("create", "build", "write", "script", "code", "implement") → researcher first (for context), then coder. END only after coder has produced code.
+- Complex tasks → planner first, then researcher and/or coder as needed.
+- NEVER route to END before the relevant agent has done its work.
+- Check the message history — if researcher or coder has already responded for this mission, you may END."""),
     ("placeholder", "{messages}"),
 ])
 
