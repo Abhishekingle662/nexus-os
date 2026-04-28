@@ -1,58 +1,61 @@
 # backend/app/agents/researcher.py
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import AIMessage, ToolMessage
-from .tools import web_search, available_tools
+from openai import OpenAI
+from langchain_core.messages import AIMessage
+from ..core.trace_queue import live_events
 from typing import Dict
 
-llm = ChatOpenAI(model="o3-mini", temperature=1)
-
-# Force the first call to use web_search; follow-ups are auto
-llm_forced = llm.bind_tools([web_search], tool_choice="required")
-llm_with_tools = llm.bind_tools(available_tools)
-
-researcher_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are the Researcher Agent for NexusOS.
-IMPORTANT: You MUST call the web_search tool before answering. Do not answer from memory.
-After getting search results, summarize clearly with key takeaways and potential impact."""),
-    ("placeholder", "{messages}"),
-    ("user", "Mission: {task}")
-])
+openai_client = OpenAI()
 
 def researcher_node(state: Dict):
-    messages = state.get("messages", [])
     task = state.get("task", "")
+    messages = state.get("messages", [])
 
-    prompt_messages = researcher_prompt.invoke({
-        "task": task,
-        "messages": messages,
-    }).messages
+    live_events.put({"type": "agent_start", "agent": "researcher"})
+    live_events.put({
+        "type": "tool_call",
+        "agent": "researcher",
+        "tool": "web_search",
+        "args": {"query": task},
+    })
 
-    chat_messages = list(prompt_messages)
+    try:
+        response = openai_client.responses.create(
+            model="o4-mini-deep-research",
+            input=task,
+            tools=[{"type": "web_search_preview"}],
+        )
 
-    # Step 1: force a web_search — model cannot skip this
-    response = llm_forced.invoke(chat_messages)
-    chat_messages.append(response)
-    for tc in response.tool_calls:
-        tool = next((t for t in available_tools if t.name == tc["name"]), None)
-        result = tool.invoke(tc["args"]) if tool else f"Unknown tool: {tc['name']}"
-        chat_messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+        final_text = ""
+        search_count = 0
+        for item in response.output:
+            item_type = getattr(item, "type", None)
+            if item_type == "web_search_call":
+                search_count += 1
+            elif item_type == "message":
+                for part in getattr(item, "content", []):
+                    if getattr(part, "type", None) == "output_text":
+                        final_text += getattr(part, "text", "")
 
-    # Step 2: loop until the model writes a final plain-text answer
-    while True:
-        response = llm_with_tools.invoke(chat_messages)
-        chat_messages.append(response)
+        live_events.put({
+            "type": "tool_result",
+            "agent": "researcher",
+            "tool": "web_search",
+            "snippet": f"[{search_count} web search{'es' if search_count != 1 else ''}]\n{final_text[:400]}",
+            "ok": True,
+        })
 
-        if not response.tool_calls:
-            break
-
-        for tc in response.tool_calls:
-            tool = next((t for t in available_tools if t.name == tc["name"]), None)
-            result = tool.invoke(tc["args"]) if tool else f"Unknown tool: {tc['name']}"
-            chat_messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+    except Exception as e:
+        final_text = f"[Researcher] Research failed: {e}"
+        live_events.put({
+            "type": "tool_result",
+            "agent": "researcher",
+            "tool": "web_search",
+            "snippet": str(e)[:300],
+            "ok": False,
+        })
 
     return {
-        "messages": messages + [AIMessage(content=response.content)],
+        "messages": messages + [AIMessage(content=final_text or "[Researcher] No content returned.")],
         "next": "supervisor",
         "status": "researcher_decision",
     }

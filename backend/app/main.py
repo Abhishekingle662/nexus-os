@@ -28,16 +28,16 @@ if __package__ in (None, ""):
     from app.agents.researcher import researcher_node
     from app.agents.supervisor import supervisor_node
     from app.agents.tester import tester_node
-    from app.core.graph import create_nexus_graph
-    from app.tools import available_tools
+    from app.core.swarm_graph import create_parallel_swarm
+    from app.core.trace_queue import live_events
 else:
     from .agents.coder import coder_node
     from .agents.planner import planner_node
     from .agents.researcher import researcher_node
     from .agents.supervisor import supervisor_node
     from .agents.tester import tester_node
-    from .core.graph import create_nexus_graph
-    from .tools import available_tools
+    from .core.swarm_graph import create_parallel_swarm
+    from .core.trace_queue import live_events
 
 app = FastAPI(title="NexusOS MVP")
 
@@ -66,13 +66,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-graph = create_nexus_graph(
+graph = create_parallel_swarm(
     supervisor_node=supervisor_node,
     planner_node=planner_node,
     researcher_node=researcher_node,
     coder_node=coder_node,
     tester_node=tester_node,
-    available_tools=available_tools,
 )
 
 active_connections: list[WebSocket] = []
@@ -109,6 +108,13 @@ async def start_mission(request: MissionRequest):
         "code": None,
     }
 
+    # Flush any stale events from a previous mission
+    while not live_events.empty():
+        try:
+            live_events.get_nowait()
+        except Exception:
+            break
+
     await broadcast({
         "type": "mission_start",
         "task": task,
@@ -117,11 +123,8 @@ async def start_mission(request: MissionRequest):
 
     loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
+    graph_done = threading.Event()
 
-    # graph.stream() is a blocking synchronous generator — running it on the
-    # event loop would freeze all WebSocket sends until the graph finishes.
-    # A background thread feeds each step into an asyncio Queue so the event
-    # loop stays free to broadcast each message as it arrives.
     def run_graph():
         try:
             for output in graph.stream(initial_state, config, stream_mode="values"):
@@ -129,8 +132,27 @@ async def start_mission(request: MissionRequest):
             loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
         except Exception as exc:
             loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+        finally:
+            graph_done.set()
+
+    def drain_live_events():
+        """Forward live trace events to the asyncio queue in real time."""
+        while not graph_done.is_set():
+            try:
+                event = live_events.get(timeout=0.05)
+                loop.call_soon_threadsafe(queue.put_nowait, ("trace", event))
+            except Exception:
+                pass
+        # Drain any remaining events after the graph finishes
+        while not live_events.empty():
+            try:
+                event = live_events.get_nowait()
+                loop.call_soon_threadsafe(queue.put_nowait, ("trace", event))
+            except Exception:
+                break
 
     threading.Thread(target=run_graph, daemon=True).start()
+    threading.Thread(target=drain_live_events, daemon=True).start()
 
     final_code = None
 
@@ -141,6 +163,9 @@ async def start_mission(request: MissionRequest):
                 break
             if kind == "error":
                 raise payload
+            if kind == "trace":
+                await broadcast({"type": "trace_event", "event": payload})
+                continue
 
             output = payload
             messages = output.get("messages", [])
